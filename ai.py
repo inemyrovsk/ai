@@ -5,16 +5,16 @@ import neat
 import os
 import time
 import random
+
 pygame.font.init()
-
-
+GEN = 0
 WIN_WIDTH = 500
 WIN_HEIGHT = 800
 images_path = "images/imgs"
 BIRD_IMAGES = []
 IMAGES = os.listdir(images_path)
 
-STAT_FONT =  pygame.font.SysFont("comicsans", 50)
+STAT_FONT = pygame.font.SysFont("comicsans", 50)
 
 for image in IMAGES:
     if image.startswith("bird"):
@@ -50,7 +50,7 @@ class Bird:
 
     def move(self):
         self.tick_count += 1
-        displacement = self.vel*self.tick_count + 1.5*self.tick_count**2
+        displacement = self.vel * self.tick_count + 1.5 * self.tick_count ** 2
 
         if displacement >= 16:
             displacement = 16
@@ -72,22 +72,22 @@ class Bird:
 
         if self.img_count < self.ANIMATION_TIME:
             self.img = self.IMGS[0]
-        elif self.img_count < self.ANIMATION_TIME*2:
+        elif self.img_count < self.ANIMATION_TIME * 2:
             self.img = self.IMGS[1]
-        elif self.img_count < self.ANIMATION_TIME*3:
+        elif self.img_count < self.ANIMATION_TIME * 3:
             self.img = self.IMGS[2]
-        elif self.img_count < self.ANIMATION_TIME*4:
+        elif self.img_count < self.ANIMATION_TIME * 4:
             self.img = self.IMGS[1]
-        elif self.img_count == self.ANIMATION_TIME*4 + 1:
+        elif self.img_count == self.ANIMATION_TIME * 4 + 1:
             self.img = self.IMGS[0]
             self.img_count = 0
 
         if self.tilt <= -80:
             self.img = self.IMGS[1]
-            self.img_count = self.ANIMATION_TIME*2
+            self.img_count = self.ANIMATION_TIME * 2
 
         rotated_image = pygame.transform.rotate(self.img, self.tilt)
-        new_rect = rotated_image.get_rect(center=self.img.get_rect(topleft = (self.x, self.y)).center)
+        new_rect = rotated_image.get_rect(center=self.img.get_rect(topleft=(self.x, self.y)).center)
 
         window.blit(rotated_image, new_rect.topleft)
 
@@ -129,7 +129,7 @@ class Pipe:
         bottom_mask = pygame.mask.from_surface(self.PIPE_BOTTOM)
 
         top_offset = (self.x - bird.x, self.top - round(bird.y))
-        bottom_offset = (self.x - bird.x, self.bottom  - round(bird.y))
+        bottom_offset = (self.x - bird.x, self.bottom - round(bird.y))
 
         bot_point = bird_mask.overlap(bottom_mask, bottom_offset)
         top_point = bird_mask.overlap(top_mask, top_offset)
@@ -165,7 +165,7 @@ class Base:
         window.blit(self.IMG, (self.x2, self.y))
 
 
-def draw_window(window, bird, pipes, base, score):
+def draw_window(window, birds, pipes, base, score, gen):
     window.blit(BG_IMAGE, (0, 0))
 
     for pipe in pipes:
@@ -174,14 +174,30 @@ def draw_window(window, bird, pipes, base, score):
     text = STAT_FONT.render("Score: " + str(score), 1, (0, 0, 0))
     window.blit(text, (WIN_WIDTH - 10 - text.get_width(), 10))
 
-    base.draw(window)
+    gen_text = STAT_FONT.render("Gen: " + str(gen), 1, (0, 0, 0))
+    window.blit(gen_text, (10, 10))
 
-    bird.draw(window)
+    base.draw(window)
+    for bird in birds:
+        bird.draw(window)
+
     pygame.display.update()
 
 
-def main():
-    bird = Bird(230, 350)
+def main(genomes, config):
+    global GEN
+    GEN += 1
+    nets = []
+    ge = []
+    birds = []
+
+    for _, g in genomes:
+        net = neat.nn.FeedForwardNetwork.create(g, config)
+        nets.append(net)
+        birds.append(Bird(230, 350))
+        g.fitness = 0
+        ge.append(g)
+
     pipes = [Pipe(700)]
     base = Base(730)
     window = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
@@ -195,36 +211,77 @@ def main():
         for even in pygame.event.get():
             if even.type == pygame.QUIT:
                 run = False
+                pygame.quit()
+                quit()
 
-        # bird.move()
+        pipe_ind = 0
+        if len(birds) > 0:
+            if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
+                pipe_ind += 1
+        else:
+            run = False
+            break
+
+        for x, bird in enumerate(birds):
+            bird.move()
+            ge[x].fitness += 0.1
+
+            output = nets[x].activate((bird.y, abs(bird.y - pipes[pipe_ind].height), abs(bird.y - pipes[pipe_ind].bottom)))
+
+            if output[0] > 0.5:
+                bird.jump()
+
         add_pipe = False
         removed = []
         for pipe in pipes:
-            if pipe.collide(bird):
-                pass
+            for x, bird in enumerate(birds):
+                if pipe.collide(bird):
+                    ge[x].fitness -= 1
+                    birds.pop(x)
+                    nets.pop(x)
+                    ge.pop(x)
+
+                if not pipe.passed and pipe.x < bird.x:
+                    pipe.passed = True
+                    add_pipe = True
 
             if pipe.x + pipe.PIPE_TOP.get_width() < 0:
                 removed.append(pipe)
-
-            if not pipe.passed and pipe.x < bird.x:
-                pipe.passed = True
-                add_pipe = True
 
             pipe.move()
 
         if add_pipe:
             score += 1
+            for g in ge:
+                g.fitness += 5
             pipes.append(Pipe(600))
+
         for r in removed:
             pipes.remove(r)
-
-        if bird.y + bird.img.get_height() >= 730:
-            pass
+        for x, bird in enumerate(birds):
+            if bird.y + bird.img.get_height() >= 730 or bird.y < 0:
+                birds.pop(x)
+                nets.pop(x)
+                ge.pop(x)
 
         base.move()
-        draw_window(window, bird, pipes, base, score)
-    pygame.quit()
-    quit()
+        draw_window(window, birds, pipes, base, score, GEN)
 
 
-main()
+def run(config_path):
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet,
+                                neat.DefaultStagnation, config_path)
+
+    population = neat.Population(config)
+
+    population.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    population.add_reporter(stats)
+
+    winner = population.run(main, 20)
+
+
+if __name__ == "__main__":
+    local_dir = os.path.dirname(__file__)
+    config_path = os.path.join(local_dir, "config-feedforward.txt")
+    run(config_path)
